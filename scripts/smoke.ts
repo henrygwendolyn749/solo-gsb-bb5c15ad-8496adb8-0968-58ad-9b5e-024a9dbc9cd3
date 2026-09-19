@@ -11,6 +11,16 @@ import {
   SNAP_RADIUS,
   WINDOW_SIZE
 } from '../src/lib/silence';
+import {
+  computeLoopRange,
+  loopEnterAction,
+  loopTickAction,
+  sanitizeMargins,
+  DEFAULT_LOOP_MARGINS,
+  LOOP_DISABLED_REASONS,
+  MAX_LOOP_MARGIN,
+  MIN_LOOP_LENGTH
+} from '../src/lib/abLoop';
 
 let fail = 0;
 function assert(cond: boolean, msg: string) {
@@ -222,5 +232,62 @@ const dragCues2 = [
 ];
 rr = resolveEdgeCandidate(dragCues2, 'b', 'start', 2.14, DC, sil, true);
 assert(rr.snapped && rr.time === 2.0 && rr.valid, '原候选时长不足但吸附到 2.0 合法');
+
+// 14. A-B 循环区间计算：禁用原因、余量、时长裁剪
+{
+  const cue = { start: 2, end: 4 };
+  let lr = computeLoopRange({ hasAudio: false, cue, margins: DEFAULT_LOOP_MARGINS, duration: 10 });
+  assert(!lr.ok && lr.reason === 'no-audio', '无音频时禁用并给出原因');
+  lr = computeLoopRange({ hasAudio: true, cue: null, margins: DEFAULT_LOOP_MARGINS, duration: 10 });
+  assert(!lr.ok && lr.reason === 'no-selection', '未选字幕时禁用并给出原因');
+  lr = computeLoopRange({ hasAudio: true, cue, margins: { pre: 0.5, post: 0.5 }, duration: 10 });
+  assert(lr.ok && lr.range.a === 1.5 && lr.range.b === 4.5, '余量向两侧扩展为 1.5~4.5');
+  // A 点裁剪到 0
+  lr = computeLoopRange({ hasAudio: true, cue: { start: 0.2, end: 1 }, margins: { pre: 0.5, post: 0 }, duration: 10 });
+  assert(lr.ok && lr.range.a === 0, 'A 点不越过时间轴起点');
+  // B 点裁剪到音频时长
+  lr = computeLoopRange({ hasAudio: true, cue: { start: 8, end: 9.8 }, margins: { pre: 0, post: 0.5 }, duration: 10 });
+  assert(lr.ok && lr.range.b === 10, 'B 点裁剪到音频时长');
+  // 字幕整体超出音频时长：裁剪后为空
+  lr = computeLoopRange({ hasAudio: true, cue: { start: 20, end: 21 }, margins: { pre: 0.25, post: 0.35 }, duration: 10 });
+  assert(!lr.ok && lr.reason === 'empty-range', '区间经音频时长裁剪后为空');
+  // 裁剪后不足最短循环长度也视为空
+  lr = computeLoopRange({ hasAudio: true, cue: { start: 9.98, end: 10.5 }, margins: { pre: 0, post: 0 }, duration: 10 });
+  assert(!lr.ok && lr.reason === 'empty-range', `裁剪后短于 ${MIN_LOOP_LENGTH}s 视为空区间`);
+  // 恰好等于最短循环长度合法
+  lr = computeLoopRange({ hasAudio: true, cue: { start: 9.95, end: 10.5 }, margins: { pre: 0, post: 0 }, duration: 10 });
+  assert(lr.ok && lr.range.a === 9.95 && lr.range.b === 10, '恰好 50ms 的区间合法');
+  // 时长未知（元数据未加载）时不做裁剪
+  lr = computeLoopRange({ hasAudio: true, cue, margins: { pre: 0.5, post: 0.5 }, duration: 0 });
+  assert(lr.ok && lr.range.b === 4.5, '音频时长未知时不裁剪');
+  // 余量清洗：负数归零、超上限截断、非有限值归零
+  const sm = sanitizeMargins({ pre: -1, post: 99 });
+  assert(sm.pre === 0 && sm.post === MAX_LOOP_MARGIN, '余量清洗：负数归零、超限截断');
+  assert(sanitizeMargins({ pre: Number.NaN, post: 0.1 }).pre === 0, '余量清洗：NaN 归零');
+  // 三种禁用原因都有说明文案
+  assert(
+    (['no-audio', 'no-selection', 'empty-range'] as const).every((k) => LOOP_DISABLED_REASONS[k].length > 0),
+    '三种禁用原因均有说明文案'
+  );
+}
+
+// 15. A-B 循环播放状态转换：越过 B 回 A、区间外跳 A
+{
+  const range = { a: 1.5, b: 4.5 };
+  let act = loopTickAction(3, range);
+  assert(act.type === 'none', '区间内播放不动作');
+  act = loopTickAction(4.5, range);
+  assert(act.type === 'seek' && act.to === 1.5 && act.reason === 'loop-back', '到达 B 点回到 A 点');
+  act = loopTickAction(4.62, range);
+  assert(act.type === 'seek' && act.to === 1.5, '越过 B 点（含 timeupdate 过冲）回到 A 点');
+  act = loopEnterAction(3, range);
+  assert(act.type === 'none', '播放头在新区间内不跳转');
+  act = loopEnterAction(1.5, range);
+  assert(act.type === 'none', '播放头恰在 A 点视为区间内');
+  act = loopEnterAction(1.2, range);
+  assert(act.type === 'seek' && act.to === 1.5 && act.reason === 'jump-to-a', '播放头在 A 点前跳到新 A 点');
+  act = loopEnterAction(4.5, range);
+  assert(act.type === 'seek' && act.to === 1.5, '播放头到达/越过 B 点跳到新 A 点');
+}
 
 process.exit(fail ? 1 : 0);

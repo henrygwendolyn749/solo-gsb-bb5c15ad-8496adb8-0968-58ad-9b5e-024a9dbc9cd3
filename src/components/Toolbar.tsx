@@ -1,4 +1,5 @@
 import type { Constraints, SilenceStatus } from '../types';
+import type { LoopMargins } from '../lib/abLoop';
 import { formatClock } from '../lib/srt';
 
 interface ToolbarProps {
@@ -16,6 +17,17 @@ interface ToolbarProps {
   silenceStatus: SilenceStatus;
   silenceSegmentCount: number;
   silenceError: string | null;
+  /** A-B 循环开关状态（切换选择时保留，导入新音频时复位） */
+  loopEnabled: boolean;
+  /** 当前是否满足循环条件（有音频、有选中字幕、区间非空） */
+  loopAvailable: boolean;
+  /** 不可循环时的原因说明 */
+  loopDisabledReason: string | null;
+  loopMargins: LoopMargins;
+  /** 区间有效时的 A/B 时间回显 */
+  loopRangeText: string | null;
+  onLoopEnabledChange: (enabled: boolean) => void;
+  onLoopMarginsChange: (margins: LoopMargins) => void;
   onImportSrt: (file: File) => void;
   onImportAudio: (file: File) => void;
   onTogglePlay: () => void;
@@ -73,6 +85,71 @@ export default function Toolbar(p: ToolbarProps) {
         </button>
         <span className="clock">
           {formatClock(p.currentTime)} / {formatClock(p.duration)}
+        </span>
+      </div>
+
+      <div className="group loop-group">
+        <label
+          className="switch"
+          title={
+            p.loopDisabledReason ??
+            '以选中字幕起止时间加前后余量形成循环区间，播放越过 B 点自动回到 A 点'
+          }
+        >
+          <input
+            type="checkbox"
+            checked={p.loopEnabled}
+            disabled={!p.loopAvailable}
+            onChange={(e) => p.onLoopEnabledChange(e.target.checked)}
+          />
+          A-B 循环
+        </label>
+        <label className="margin" title="A 点 = 字幕起点 − 前余量（0 ~ 5s）">
+          前余量
+          <input
+            type="number"
+            min={0}
+            max={5}
+            step={0.05}
+            value={p.loopMargins.pre}
+            disabled={!p.loopAvailable}
+            onChange={(e) =>
+              p.onLoopMarginsChange({
+                ...p.loopMargins,
+                pre: Math.min(5, Math.max(0, Number(e.target.value) || 0))
+              })
+            }
+          />
+          s
+        </label>
+        <label className="margin" title="B 点 = 字幕终点 + 后余量（0 ~ 5s）">
+          后余量
+          <input
+            type="number"
+            min={0}
+            max={5}
+            step={0.05}
+            value={p.loopMargins.post}
+            disabled={!p.loopAvailable}
+            onChange={(e) =>
+              p.onLoopMarginsChange({
+                ...p.loopMargins,
+                post: Math.min(5, Math.max(0, Number(e.target.value) || 0))
+              })
+            }
+          />
+          s
+        </label>
+        <span
+          className={[
+            'loop-state',
+            p.loopEnabled && p.loopRangeText && 'active',
+            p.loopDisabledReason && 'disabled'
+          ]
+            .filter(Boolean)
+            .join(' ')}
+        >
+          {p.loopRangeText ?? p.loopDisabledReason ?? ''}
         </span>
       </div>
 

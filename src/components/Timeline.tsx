@@ -3,6 +3,7 @@ import type { Constraints, Cue, DragEdge, RejectReason, SilenceSegment } from '.
 import { applyEdge } from '../lib/cues';
 import { formatClock } from '../lib/srt';
 import { resolveEdgeCandidate, type SnapEdge } from '../lib/silence';
+import type { LoopRange } from '../lib/abLoop';
 
 interface TimelineProps {
   cues: Cue[];
@@ -17,6 +18,8 @@ interface TimelineProps {
   silences: SilenceSegment[];
   /** 静音吸附开关 */
   snapEnabled: boolean;
+  /** 生效中的 A-B 循环区间；为 null 时不渲染循环标记 */
+  loopRange: LoopRange | null;
   onSelect: (id: string | null) => void;
   onSeek: (t: number) => void;
   /** 合法拖放结束：提交边界并进入历史栈 */
@@ -74,6 +77,7 @@ export default function Timeline({
   selectedId,
   silences,
   snapEnabled,
+  loopRange,
   onSelect,
   onSeek,
   onCommit,
@@ -331,6 +335,25 @@ export default function Timeline({
               title={`静音 ${formatClock(seg.start)} → ${formatClock(seg.end)}`}
             />
           ))}
+          {/* A-B 循环：标尺上的范围带与 A/B 旗标 */}
+          {loopRange && (
+            <>
+              <div
+                className="loop-band ruler-loop"
+                style={{
+                  left: loopRange.a * pps,
+                  width: Math.max(2, (loopRange.b - loopRange.a) * pps)
+                }}
+                title={`循环区间 ${formatClock(loopRange.a)} → ${formatClock(loopRange.b)}`}
+              />
+              <div className="loop-flag loop-flag-a" style={{ left: loopRange.a * pps }} title={`A 点 ${formatClock(loopRange.a)}`}>
+                A
+              </div>
+              <div className="loop-flag loop-flag-b" style={{ left: loopRange.b * pps }} title={`B 点 ${formatClock(loopRange.b)}`}>
+                B
+              </div>
+            </>
+          )}
           {duration > 0 && (
             <div className="audio-end" style={{ left: duration * pps }} title={`音频结尾 ${formatClock(duration)}`}>
               ♫
@@ -368,6 +391,23 @@ export default function Timeline({
               <span className="silence-tag">静</span>
             </div>
           ))}
+
+          {/* A-B 循环范围：半透明覆盖层 + 两端 A/B 标签，不拦截任何鼠标事件 */}
+          {loopRange && (
+            <div
+              className="loop-band lane-loop"
+              style={{
+                left: loopRange.a * pps,
+                width: Math.max(2, (loopRange.b - loopRange.a) * pps),
+                top: 6,
+                height: LANE_HEIGHT + 12
+              }}
+              title={`A-B 循环 ${formatClock(loopRange.a)} → ${formatClock(loopRange.b)}`}
+            >
+              <span className="loop-tag loop-tag-a">A</span>
+              <span className="loop-tag loop-tag-b">B</span>
+            </div>
+          )}
 
           {sorted.map((cue) => {
             const v = visualCue(cue);

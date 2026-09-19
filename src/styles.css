@@ -197,6 +197,65 @@ body {
   opacity: 0.45;
 }
 
+/* A-B 循环控件 */
+
+.loop-group {
+  gap: 8px;
+}
+
+.loop-group .switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.loop-group .switch input {
+  accent-color: var(--warn);
+}
+
+.loop-group .switch:has(input:disabled) {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.loop-group .margin {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.loop-group .margin input[type='number'] {
+  width: 58px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: #0e1424;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.loop-group .margin input[type='number']:disabled {
+  opacity: 0.45;
+}
+
+.loop-state {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.loop-state.active {
+  color: var(--warn);
+}
+
+.loop-state.disabled {
+  color: var(--danger);
+}
+
 /* ---------------- 主区域 ---------------- */
 
 .main {
@@ -332,6 +391,75 @@ body {
   font-size: 9px;
   color: rgba(138, 151, 179, 0.8);
   user-select: none;
+}
+
+/* A-B 循环范围标记 */
+
+.loop-band {
+  position: absolute;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.loop-band.ruler-loop {
+  top: 0;
+  bottom: 0;
+  background: rgba(245, 181, 68, 0.12);
+  border-left: 1px solid rgba(245, 181, 68, 0.75);
+  border-right: 1px solid rgba(245, 181, 68, 0.75);
+}
+
+.loop-flag {
+  position: absolute;
+  top: 1px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--warn);
+  color: #241a04;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.5;
+  pointer-events: none;
+  z-index: 6;
+}
+
+/* A 旗标贴线右侧、B 旗标贴线左侧，避免 A=0 时被左边缘裁切 */
+.loop-flag-a {
+  transform: translateX(2px);
+}
+
+.loop-flag-b {
+  transform: translateX(calc(-100% - 2px));
+}
+
+.loop-band.lane-loop {
+  background: rgba(245, 181, 68, 0.08);
+  border-left: 2px solid rgba(245, 181, 68, 0.9);
+  border-right: 2px solid rgba(245, 181, 68, 0.9);
+  border-radius: 3px;
+  z-index: 3;
+}
+
+.loop-tag {
+  position: absolute;
+  top: 0;
+  padding: 1px 5px;
+  background: var(--warn);
+  color: #241a04;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+  user-select: none;
+}
+
+.loop-tag-a {
+  left: 0;
+  border-radius: 0 0 5px 0;
+}
+
+.loop-tag-b {
+  right: 0;
+  border-radius: 0 0 0 5px;
 }
 
 /* 吸附标记与气泡 */

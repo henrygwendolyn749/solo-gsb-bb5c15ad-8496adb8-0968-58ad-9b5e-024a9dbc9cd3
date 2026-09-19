@@ -3,7 +3,7 @@ import Toolbar from './components/Toolbar';
 import Timeline from './components/Timeline';
 import CueList from './components/CueList';
 import type { Constraints, Cue, SilenceStatus } from './types';
-import { parseSrt, serializeSrt } from './lib/srt';
+import { parseSrt, serializeSrt, formatClock } from './lib/srt';
 import {
   commitHistory,
   initHistory,
@@ -17,6 +17,14 @@ import {
   analyzeAudioFile,
   isAbortError
 } from './lib/audioAnalysis';
+import {
+  computeLoopRange,
+  loopEnterAction,
+  loopTickAction,
+  DEFAULT_LOOP_MARGINS,
+  LOOP_DISABLED_REASONS,
+  type LoopMargins
+} from './lib/abLoop';
 
 interface Toast {
   id: number;
@@ -50,6 +58,10 @@ export default function App() {
   const [levels, setLevels] = useState<WindowLevels | null>(null);
   const [silenceStatus, setSilenceStatus] = useState<SilenceStatus>('idle');
   const [silenceError, setSilenceError] = useState<string | null>(null);
+
+  // A-B 循环：开关（切换选择时保留）、前后余量
+  const [loopEnabled, setLoopEnabled] = useState(false);
+  const [loopMargins, setLoopMargins] = useState<LoopMargins>(DEFAULT_LOOP_MARGINS);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
@@ -119,6 +131,9 @@ export default function App() {
   const handleImportAudio = useCallback(
     (file: File) => {
       const el = ensureAudio();
+      // 显式暂停并复位状态：换音频后旧播放回调（rAF/timeupdate）不得再拉回播放头
+      el.pause();
+      setIsPlaying(false);
       if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
       const url = URL.createObjectURL(file);
       audioUrlRef.current = url;
@@ -126,7 +141,10 @@ export default function App() {
       el.load();
       setAudioName(file.name);
       setCurrentTime(0);
+      setDuration(0);
       setLevels(null);
+      // 音频更换后旧循环区间不再适用，关闭循环（开关不保留）
+      setLoopEnabled(false);
       // 取消旧分析（若正在进行），并以新令牌开始本次分析，阻止旧结果回写
       runSilenceAnalysis(file);
       pushToast('info', `已加载音频：${file.name}`);
@@ -170,6 +188,59 @@ export default function App() {
     if (el.paused) void el.play();
     else el.pause();
   }, [pushToast]);
+
+  /* ---------------- A-B 循环 ---------------- */
+
+  const selectedCue = useMemo(
+    () => cues.find((c) => c.id === selectedId) ?? null,
+    [cues, selectedId]
+  );
+
+  // 区间计算为纯函数：无音频 / 未选字幕 / 裁剪后为空时给出原因
+  const loopResult = useMemo(
+    () =>
+      computeLoopRange({
+        hasAudio: audioName !== null,
+        cue: selectedCue,
+        margins: loopMargins,
+        duration
+      }),
+    [audioName, selectedCue, loopMargins, duration]
+  );
+
+  // 仅当开关打开且区间有效时循环才生效（开关状态在切换选择时保留）
+  const activeLoop = loopEnabled && loopResult.ok ? loopResult.range : null;
+
+  // 区间出现 / 更新（开启循环、切换选择、调整余量、拖动选中字幕边界）时：
+  // 播放头落在新区间外则立即跳到新 A 点，保持当前播放/暂停状态
+  useEffect(() => {
+    if (!activeLoop) return;
+    const now = audioRef.current?.currentTime ?? 0;
+    const action = loopEnterAction(now, activeLoop);
+    if (action.type === 'seek') seek(action.to, isPlaying);
+    // 只在区间本身变化时评估；currentTime / isPlaying 取当时值即可
+  }, [activeLoop]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 播放中且循环生效：rAF 逐帧检查，越过 B 点回到 A 点继续。
+  // 暂停、关闭循环或更换音频都会清理本效应并取消帧回调，
+  // 且 tick 内再次确认元素未暂停，旧回调不会再拉回播放头。
+  useEffect(() => {
+    if (!activeLoop || !isPlaying) return;
+    let raf = 0;
+    const tick = () => {
+      const el = audioRef.current;
+      if (el && !el.paused) {
+        const action = loopTickAction(el.currentTime, activeLoop);
+        if (action.type === 'seek') {
+          el.currentTime = action.to;
+          setCurrentTime(action.to);
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [activeLoop, isPlaying]);
 
   /* ---------------- SRT ---------------- */
 
@@ -251,9 +322,14 @@ export default function App() {
     else if (silenceStatus === 'done') {
       parts.push(`${silenceSegments.length} 段静音` + (snapEnabled ? '· 吸附已开启' : '· 吸附已关闭'));
     } else if (silenceStatus === 'error') parts.push('静音分析失败');
+    if (activeLoop) {
+      parts.push(`A-B 循环 ${formatClock(activeLoop.a)} → ${formatClock(activeLoop.b)}`);
+    } else if (loopEnabled && !loopResult.ok) {
+      parts.push(`循环待机：${LOOP_DISABLED_REASONS[loopResult.reason]}`);
+    }
     if (cues.length > 0) parts.push(`已记录 ${history.past.length} 次调整`);
     return parts.join(' · ');
-  }, [cues.length, history.past.length, silenceStatus, silenceSegments.length, snapEnabled]);
+  }, [cues.length, history.past.length, silenceStatus, silenceSegments.length, snapEnabled, activeLoop, loopEnabled, loopResult]);
 
   return (
     <div className="app">
@@ -284,6 +360,17 @@ export default function App() {
         silenceStatus={silenceStatus}
         silenceSegmentCount={silenceSegments.length}
         silenceError={silenceError}
+        loopEnabled={loopEnabled}
+        loopAvailable={loopResult.ok}
+        loopDisabledReason={loopResult.ok ? null : LOOP_DISABLED_REASONS[loopResult.reason]}
+        loopMargins={loopMargins}
+        loopRangeText={
+          loopResult.ok
+            ? `A ${formatClock(loopResult.range.a)} → B ${formatClock(loopResult.range.b)}`
+            : null
+        }
+        onLoopEnabledChange={setLoopEnabled}
+        onLoopMarginsChange={setLoopMargins}
       />
 
       <main className="main">
@@ -291,7 +378,7 @@ export default function App() {
           <div className="status-bar">
             <span>{statusText}</span>
             <span className="status-hint">
-              拖动字幕块左右边界校对 · 靠近静音带边缘 150ms 自动吸附 · 越界自动回弹并提示原因 · 点击字幕块定位播放
+              拖动字幕块左右边界校对 · 靠近静音带边缘 150ms 自动吸附 · 越界自动回弹并提示原因 · 点击字幕块定位播放 · 开启 A-B 循环反复试听选中字幕
             </span>
           </div>
           <Timeline
@@ -304,6 +391,7 @@ export default function App() {
             selectedId={selectedId}
             silences={silenceSegments}
             snapEnabled={snapEnabled}
+            loopRange={activeLoop}
             onSelect={setSelectedId}
             onSeek={seekAndPlay}
             onCommit={commit}
