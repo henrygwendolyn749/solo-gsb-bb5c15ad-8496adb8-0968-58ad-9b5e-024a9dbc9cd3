@@ -1,5 +1,6 @@
 import type { Constraints, SilenceStatus } from '../types';
 import { formatClock } from '../lib/srt';
+import type { LoopMargins, LoopRange } from '../lib/abLoop';
 
 interface ToolbarProps {
   audioName: string | null;
@@ -16,6 +17,15 @@ interface ToolbarProps {
   silenceStatus: SilenceStatus;
   silenceSegmentCount: number;
   silenceError: string | null;
+  /** A-B 循环：开关状态（用户意图，即使暂不可用也保留） */
+  loopEnabled: boolean;
+  /** 当前生效的循环区间；未开启或不可用时为 null */
+  loopRange: LoopRange | null;
+  /** 不可用原因文案；null 表示可开启 */
+  loopDisabledReason: string | null;
+  loopMargins: LoopMargins;
+  onLoopEnabledChange: (on: boolean) => void;
+  onLoopMarginsChange: (next: LoopMargins) => void;
   onImportSrt: (file: File) => void;
   onImportAudio: (file: File) => void;
   onTogglePlay: () => void;
@@ -74,6 +84,59 @@ export default function Toolbar(p: ToolbarProps) {
         <span className="clock">
           {formatClock(p.currentTime)} / {formatClock(p.duration)}
         </span>
+      </div>
+
+      <div className="group loop-group">
+        <label
+          className="switch"
+          title={
+            p.loopDisabledReason ??
+            '以选中字幕起止 ± 前后余量形成循环区间，播放越过 B 点自动回到 A 点'
+          }
+        >
+          <input
+            type="checkbox"
+            checked={p.loopEnabled}
+            disabled={!p.loopEnabled && p.loopDisabledReason !== null}
+            onChange={(e) => p.onLoopEnabledChange(e.target.checked)}
+          />
+          A-B 循环
+        </label>
+        <label className="margin" title="循环起点 A = 字幕起点 − 前余量（不越过 0s）">
+          前余量
+          <input
+            type="number"
+            min={0}
+            max={10}
+            step={0.1}
+            value={p.loopMargins.pre}
+            onChange={(e) =>
+              p.onLoopMarginsChange({ ...p.loopMargins, pre: Math.max(0, Number(e.target.value) || 0) })
+            }
+          />
+          s
+        </label>
+        <label className="margin" title="循环终点 B = 字幕终点 + 后余量（不越过音频结尾）">
+          后余量
+          <input
+            type="number"
+            min={0}
+            max={10}
+            step={0.1}
+            value={p.loopMargins.post}
+            onChange={(e) =>
+              p.onLoopMarginsChange({ ...p.loopMargins, post: Math.max(0, Number(e.target.value) || 0) })
+            }
+          />
+          s
+        </label>
+        {p.loopDisabledReason ? (
+          <span className="loop-state failed">{p.loopDisabledReason}</span>
+        ) : p.loopRange ? (
+          <span className="loop-state live">
+            A {formatClock(p.loopRange.a)} → B {formatClock(p.loopRange.b)}
+          </span>
+        ) : null}
       </div>
 
       <div className="group zoom-group">

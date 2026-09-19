@@ -3,6 +3,7 @@ import type { Constraints, Cue, DragEdge, RejectReason, SilenceSegment } from '.
 import { applyEdge } from '../lib/cues';
 import { formatClock } from '../lib/srt';
 import { resolveEdgeCandidate, type SnapEdge } from '../lib/silence';
+import type { LoopRange } from '../lib/abLoop';
 
 interface TimelineProps {
   cues: Cue[];
@@ -17,6 +18,8 @@ interface TimelineProps {
   silences: SilenceSegment[];
   /** 静音吸附开关 */
   snapEnabled: boolean;
+  /** 当前生效的 A-B 循环区间；未开启时为 null */
+  loopRange: LoopRange | null;
   onSelect: (id: string | null) => void;
   onSeek: (t: number) => void;
   /** 合法拖放结束：提交边界并进入历史栈 */
@@ -74,6 +77,7 @@ export default function Timeline({
   selectedId,
   silences,
   snapEnabled,
+  loopRange,
   onSelect,
   onSeek,
   onCommit,
@@ -331,6 +335,22 @@ export default function Timeline({
               title={`静音 ${formatClock(seg.start)} → ${formatClock(seg.end)}`}
             />
           ))}
+          {/* A-B 循环范围与旗标（标尺） */}
+          {loopRange && (
+            <>
+              <div
+                className="ab-range ruler-ab"
+                style={{ left: loopRange.a * pps, width: Math.max(2, (loopRange.b - loopRange.a) * pps) }}
+                title={`循环区间 ${formatClock(loopRange.a)} → ${formatClock(loopRange.b)}`}
+              />
+              <div className="ab-flag" style={{ left: loopRange.a * pps }}>
+                A
+              </div>
+              <div className="ab-flag" style={{ left: loopRange.b * pps }}>
+                B
+              </div>
+            </>
+          )}
           {duration > 0 && (
             <div className="audio-end" style={{ left: duration * pps }} title={`音频结尾 ${formatClock(duration)}`}>
               ♫
@@ -368,6 +388,28 @@ export default function Timeline({
               <span className="silence-tag">静</span>
             </div>
           ))}
+
+          {/* A-B 循环范围带与 A/B 标线（泳道） */}
+          {loopRange && (
+            <>
+              <div
+                className="ab-range lane-ab"
+                style={{
+                  left: loopRange.a * pps,
+                  width: Math.max(2, (loopRange.b - loopRange.a) * pps),
+                  top: 6,
+                  height: LANE_HEIGHT + 12
+                }}
+                title={`A-B 循环 ${formatClock(loopRange.a)} → ${formatClock(loopRange.b)}`}
+              />
+              <div className="ab-marker" style={{ left: loopRange.a * pps }} title={`循环起点 A ${formatClock(loopRange.a)}`}>
+                <span className="ab-tag">A {formatClock(loopRange.a)}</span>
+              </div>
+              <div className="ab-marker" style={{ left: loopRange.b * pps }} title={`循环终点 B ${formatClock(loopRange.b)}`}>
+                <span className="ab-tag right">B {formatClock(loopRange.b)}</span>
+              </div>
+            </>
+          )}
 
           {sorted.map((cue) => {
             const v = visualCue(cue);

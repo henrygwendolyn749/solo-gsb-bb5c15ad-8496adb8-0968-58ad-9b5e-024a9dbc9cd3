@@ -3,7 +3,17 @@ import Toolbar from './components/Toolbar';
 import Timeline from './components/Timeline';
 import CueList from './components/CueList';
 import type { Constraints, Cue, SilenceStatus } from './types';
-import { parseSrt, serializeSrt } from './lib/srt';
+import { formatClock, parseSrt, serializeSrt } from './lib/srt';
+import {
+  computeLoopRange,
+  DEFAULT_LOOP_MARGINS,
+  loopDisableReason,
+  loopDisableText,
+  loopEntryTarget,
+  loopWrapTarget,
+  type LoopMargins,
+  type LoopRange
+} from './lib/abLoop';
 import {
   commitHistory,
   initHistory,
@@ -51,11 +61,21 @@ export default function App() {
   const [silenceStatus, setSilenceStatus] = useState<SilenceStatus>('idle');
   const [silenceError, setSilenceError] = useState<string | null>(null);
 
+  // A-B 循环试听：开关与前后余量（区间由选中字幕推导，见下方 loopRange）
+  const [loopEnabled, setLoopEnabled] = useState(false);
+  const [loopMargins, setLoopMargins] = useState<LoopMargins>(DEFAULT_LOOP_MARGINS);
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
   const toastId = useRef(0);
   // 当前音频分析的取消令牌；更换音频时取消旧分析并阻止旧结果回写
   const analysisTokenRef = useRef<AbortToken | null>(null);
+  // 最新循环计划的镜像，供音频事件 / rAF 回调读取，避免闭包过期；
+  // 暂停、导入新音频或关闭循环时同步置为失效，旧回调读到 inactive 即落空
+  const loopPlanRef = useRef<{ active: boolean; range: LoopRange | null }>({
+    active: false,
+    range: null
+  });
 
   const cues = history.present;
 
@@ -78,7 +98,18 @@ export default function App() {
       el.addEventListener('loadedmetadata', () => setDuration(el.duration || 0));
       el.addEventListener('play', () => setIsPlaying(true));
       el.addEventListener('pause', () => setIsPlaying(false));
-      el.addEventListener('ended', () => setIsPlaying(false));
+      el.addEventListener('ended', () => {
+        // B 点被裁剪到音频结尾时，'ended' 先于「越过 B」发生：循环仍激活则回到 A 继续；
+        // 读取的是最新循环计划，导入新音频 / 关闭循环后计划已失效，不会拉回播放头
+        const plan = loopPlanRef.current;
+        if (plan.active && plan.range) {
+          el.currentTime = plan.range.a;
+          setCurrentTime(plan.range.a);
+          void el.play().catch(() => setIsPlaying(false));
+          return;
+        }
+        setIsPlaying(false);
+      });
       audioRef.current = el;
     }
     return audioRef.current;
@@ -118,6 +149,8 @@ export default function App() {
 
   const handleImportAudio = useCallback(
     (file: File) => {
+      // 先作废旧循环计划：换源期间已排队的播放回调不得再拉回播放头
+      loopPlanRef.current = { active: false, range: null };
       const el = ensureAudio();
       if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
       const url = URL.createObjectURL(file);
@@ -170,6 +203,69 @@ export default function App() {
     if (el.paused) void el.play();
     else el.pause();
   }, [pushToast]);
+
+  /* ---------------- A-B 循环试听 ---------------- */
+
+  const selectedCue = useMemo(() => cues.find((c) => c.id === selectedId) ?? null, [cues, selectedId]);
+  const hasAudio = audioName !== null;
+  // 区间 = 选中字幕 ± 前后余量，裁剪到音频时长；选择或余量变化时自动更新
+  const loopRange = useMemo(
+    () => computeLoopRange(selectedCue, loopMargins, duration),
+    [selectedCue, loopMargins, duration]
+  );
+  const loopDisabled = loopDisableReason(hasAudio, selectedCue, loopRange);
+  const loopActive = loopEnabled && loopDisabled === null && loopRange !== null;
+
+  // 渲染期同步最新循环计划，供音频事件 / rAF 回调读取（写入幂等，StrictMode 安全）
+  loopPlanRef.current = { active: loopActive, range: loopActive ? loopRange : null };
+
+  // 帧级回卷监听：播放中越过 B 点即回到 A 点继续。
+  // 依赖变化（暂停 / 关闭 / 区间失效）或卸载时取消 rAF，且 tick 内再校验最新计划，
+  // 保证旧回调不会再次拉回播放头。
+  const loopMonitoring = loopActive && isPlaying;
+  useEffect(() => {
+    if (!loopMonitoring) return;
+    const el = audioRef.current;
+    if (!el) return;
+    let raf = 0;
+    const tick = () => {
+      const plan = loopPlanRef.current;
+      if (plan.active && plan.range && !el.paused) {
+        const target = loopWrapTarget(el.currentTime, plan.range);
+        if (target !== null) {
+          el.currentTime = target;
+          setCurrentTime(target);
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [loopMonitoring]);
+
+  // 开启循环或切换选择后：播放头落在新区间外则立即跳到新 A 点（保持当前播放/暂停状态）
+  const loopEntryKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!loopActive || !loopRange) {
+      loopEntryKeyRef.current = null;
+      return;
+    }
+    const key = selectedId ?? '';
+    if (loopEntryKeyRef.current === key) return; // 同一路径不重复校正（余量微调不抢播放头）
+    loopEntryKeyRef.current = key;
+    const el = audioRef.current;
+    const now = el && audioUrlRef.current ? el.currentTime : currentTime;
+    const target = loopEntryTarget(now, loopRange);
+    if (target !== null) seek(target);
+  }, [loopActive, loopRange, selectedId, seek, currentTime]);
+
+  const handleLoopEnabledChange = useCallback((on: boolean) => {
+    if (!on) {
+      // 关闭循环：同步作废旧计划，已排队的播放回调不再拉回播放头
+      loopPlanRef.current = { active: false, range: null };
+    }
+    setLoopEnabled(on);
+  }, []);
 
   /* ---------------- SRT ---------------- */
 
@@ -251,9 +347,14 @@ export default function App() {
     else if (silenceStatus === 'done') {
       parts.push(`${silenceSegments.length} 段静音` + (snapEnabled ? '· 吸附已开启' : '· 吸附已关闭'));
     } else if (silenceStatus === 'error') parts.push('静音分析失败');
+    if (loopActive && loopRange) {
+      parts.push(`A-B 循环 ${formatClock(loopRange.a)} → ${formatClock(loopRange.b)}`);
+    } else if (loopEnabled && loopDisabled) {
+      parts.push(`循环待机：${loopDisableText(loopDisabled)}`);
+    }
     if (cues.length > 0) parts.push(`已记录 ${history.past.length} 次调整`);
     return parts.join(' · ');
-  }, [cues.length, history.past.length, silenceStatus, silenceSegments.length, snapEnabled]);
+  }, [cues.length, history.past.length, silenceStatus, silenceSegments.length, snapEnabled, loopActive, loopRange, loopEnabled, loopDisabled]);
 
   return (
     <div className="app">
@@ -284,6 +385,12 @@ export default function App() {
         silenceStatus={silenceStatus}
         silenceSegmentCount={silenceSegments.length}
         silenceError={silenceError}
+        loopEnabled={loopEnabled}
+        loopRange={loopActive ? loopRange : null}
+        loopDisabledReason={loopDisabled ? loopDisableText(loopDisabled) : null}
+        loopMargins={loopMargins}
+        onLoopEnabledChange={handleLoopEnabledChange}
+        onLoopMarginsChange={setLoopMargins}
       />
 
       <main className="main">
@@ -304,6 +411,7 @@ export default function App() {
             selectedId={selectedId}
             silences={silenceSegments}
             snapEnabled={snapEnabled}
+            loopRange={loopActive ? loopRange : null}
             onSelect={setSelectedId}
             onSeek={seekAndPlay}
             onCommit={commit}

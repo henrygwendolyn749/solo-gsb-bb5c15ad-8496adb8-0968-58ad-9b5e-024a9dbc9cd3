@@ -11,6 +11,15 @@ import {
   SNAP_RADIUS,
   WINDOW_SIZE
 } from '../src/lib/silence';
+import {
+  computeLoopRange,
+  DEFAULT_LOOP_MARGINS,
+  loopDisableReason,
+  loopDisableText,
+  loopEntryTarget,
+  loopWrapTarget,
+  MIN_LOOP_LENGTH
+} from '../src/lib/abLoop';
 
 let fail = 0;
 function assert(cond: boolean, msg: string) {
@@ -222,5 +231,54 @@ const dragCues2 = [
 ];
 rr = resolveEdgeCandidate(dragCues2, 'b', 'start', 2.14, DC, sil, true);
 assert(rr.snapped && rr.time === 2.0 && rr.valid, '原候选时长不足但吸附到 2.0 合法');
+
+// 14. A-B 循环：区间计算（余量、裁剪、空区间）
+{
+  const cue = { start: 2, end: 4 };
+  let lr = computeLoopRange(cue, { pre: 0.5, post: 0.25 }, 10);
+  assert(lr?.a === 1.5 && lr?.b === 4.25, `循环区间加余量（实际 ${lr?.a}~${lr?.b}）`);
+  lr = computeLoopRange({ start: 0.2, end: 1 }, { pre: 0.5, post: 0 }, 10);
+  assert(lr?.a === 0, 'A 点不越过 0s');
+  lr = computeLoopRange({ start: 8, end: 9.8 }, { pre: 0, post: 0.5 }, 10);
+  assert(lr?.b === 10, 'B 点裁剪到音频时长');
+  lr = computeLoopRange({ start: 12, end: 13 }, { pre: 0.3, post: 0.3 }, 10);
+  assert(lr === null, '区间整体超出音频时长 -> 空');
+  lr = computeLoopRange({ start: 9.98, end: 10.5 }, { pre: 0, post: 0 }, 10);
+  assert(lr === null, `裁剪后不足 ${MIN_LOOP_LENGTH}s -> 空`);
+  lr = computeLoopRange(null, { pre: 0.3, post: 0.3 }, 10);
+  assert(lr === null, '无选中字幕 -> 无区间');
+  lr = computeLoopRange(cue, { pre: -1, post: -1 }, 10);
+  assert(lr?.a === 2 && lr?.b === 4, '负余量按 0 处理');
+  lr = computeLoopRange({ start: 8, end: 9 }, { pre: 0, post: 0.5 }, 0);
+  assert(lr?.b === 9.5, '时长未知（0）时不裁剪 B');
+  assert(DEFAULT_LOOP_MARGINS.pre >= 0 && DEFAULT_LOOP_MARGINS.post >= 0, '默认余量非负');
+}
+
+// 15. A-B 循环：禁用原因优先级与文案
+{
+  const cue = { start: 2, end: 4 };
+  const range = { a: 1.5, b: 4.25 };
+  assert(loopDisableReason(false, cue, range) === 'no-audio', '无音频禁用');
+  assert(loopDisableReason(true, null, null) === 'no-selection', '未选字幕禁用');
+  assert(loopDisableReason(true, cue, null) === 'empty-range', '区间为空禁用');
+  assert(loopDisableReason(true, cue, range) === null, '条件满足可开启');
+  assert(loopDisableReason(false, null, null) === 'no-audio', '无音频优先于未选字幕');
+  assert(loopDisableText('empty-range').includes('裁剪'), '空区间原因说明裁剪');
+}
+
+// 16. A-B 循环：播放状态转换（越过 B 回 A / 进入新区间校正）
+{
+  const range = { a: 1, b: 4 };
+  assert(loopWrapTarget(3.9, range) === null, '未越过 B 不干预');
+  assert(loopWrapTarget(4, range) === 1, '恰好到 B 回 A');
+  assert(loopWrapTarget(4.2, range) === 1, '越过 B 回 A');
+  assert(loopWrapTarget(5, null) === null, '无区间不干预');
+  assert(loopEntryTarget(0.5, range) === 1, '落在新区间之前 -> 跳到新 A');
+  assert(loopEntryTarget(5, range) === 1, '落在新区间之后 -> 跳到新 A');
+  assert(loopEntryTarget(2, range) === null, '区间内不动播放头');
+  assert(loopEntryTarget(1, range) === null, '恰在 A 不动');
+  assert(loopEntryTarget(4, range) === null, '恰在 B 不动（播放推进由回卷处理）');
+  assert(loopEntryTarget(0.5, null) === null, '无区间不校正');
+}
 
 process.exit(fail ? 1 : 0);
